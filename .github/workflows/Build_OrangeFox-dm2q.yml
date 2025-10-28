@@ -1,4 +1,4 @@
-name: OrangeFox - Build by kinguser981 mod
+name: Build OrangeFox for dm2q
 
 on:
   workflow_dispatch:
