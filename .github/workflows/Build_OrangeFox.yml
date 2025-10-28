@@ -1,0 +1,154 @@
+name: Build and release OrangeFox
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      actions: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dm1q, dm2q, dm3q]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Clean-up
+      uses: rokibhasansagar/slimhub_actions@main
+
+    - name: Build Environment
+      run: |
+        sudo apt update
+        sudo apt -y upgrade
+        sudo apt -y install ccache
+        git clone https://gitlab.com/OrangeFox/misc/scripts
+        cd scripts
+        sudo bash setup/android_build_env.sh
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 24
+
+    - name: Set OrangeFox branch
+      run: |
+        echo "FOX_BRANCH=12.1" >> $GITHUB_ENV
+
+    - name: Setup Manifest
+      run: |
+        mkdir -p ${GITHUB_WORKSPACE}/OrangeFox
+        cd ${GITHUB_WORKSPACE}/OrangeFox
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git clone https://gitlab.com/OrangeFox/sync.git
+        cd sync
+        ./orangefox_sync.sh --branch ${{ env.FOX_BRANCH }} --path ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}
+
+    - name: Clone Device Tree
+      run: |
+        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}
+        git clone https://github.com/cola2261/android_device_samsung_${{ matrix.target }}-recovery -b fox_12.1 ./device/samsung/${{ matrix.target }}
+        cd device/samsung/${{ matrix.target }}
+        echo "COMMIT_ID_DT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+    - name: Clone Common Tree
+      run: |
+        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}
+        git clone https://github.com/cola2261/android_device_samsung_sm8550-common-recovery -b fox_12.1 ./device/samsung/sm8550-common
+        cd device/samsung/sm8550-common
+        echo "COMMIT_ID_CT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+    - name: Setup ccache
+      run: |
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache --max-size=50G
+        ccache -o compression=true
+        export CC="ccache gcc"
+        export CXX="ccache g++"
+        ccache -s
+      continue-on-error: true
+
+    - name: Build OrangeFox
+      run: |
+        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}
+        set +e
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        set -e
+        lunch twrp_${{ matrix.target }}-eng && make -j"$(nproc)" "recoveryimage"
+
+    - name: Check if Recovery Exist and Set Path
+      id: check
+      run: |
+        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}
+        # Default path check
+        if [ -f out/target/product/${{ matrix.target }}/OrangeFox*.img ]; then
+            FILE_PATH="${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}/out/target/product/${{ matrix.target }}"
+        # Alternative path check
+        elif [ -f out/target/product/${{ matrix.target }}/target/product/${{ matrix.target }}/OrangeFox*.img ]; then
+            FILE_PATH="${GITHUB_WORKSPACE}/OrangeFox/fox_${{ env.FOX_BRANCH }}/out/target/product/${{ matrix.target }}/target/product/${{ matrix.target }}"
+        else
+            echo "::error::Recovery image not found for ${{ matrix.target }}."
+            exit 1
+        fi
+
+        # Save path for subsequent artifact upload in this job
+        echo "File_Path=$FILE_PATH" >> $GITHUB_ENV
+        # Save a unique filename for the artifact upload
+        IMG_NAME=$(basename ${FILE_PATH}/OrangeFox*.img)
+        echo "IMAGE_NAME=${{ matrix.target }}-${IMG_NAME}" >> $GITHUB_ENV
+
+    - name: Upload Artifact (Required for Release Job)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.target }}-recovery-files
+        path: |
+          ${{ env.File_Path }}/OrangeFox*.img
+          ${{ env.File_Path }}/OrangeFox*.img.tar
+          ${{ env.File_Path }}/OrangeFox*.zip
+        retention-days: 1 # Delete artifacts after 1 day to save storage
+
+  release:
+    needs: build # Wait for the 'build' job to complete successfully
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts # Downloads all matrix artifacts into this folder
+
+    - name: Set Release Values
+      run: |
+        echo "BUILD_DATE=$(date +%Y.%m.%d)" >> $GITHUB_ENV
+        # We need to collect file paths for all downloaded artifacts
+        echo "FILE_ASSETS=$(find artifacts -type f | tr '\n' ' ')" >> $GITHUB_ENV
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        # Use the collected paths of all files in the artifacts directory
+        files: ${{ env.FILE_ASSETS }}
+        name: Unofficial OrangeFox ${{ env.BUILD_DATE }}
+        tag_name: ${{ github.run_id }}-${{ env.BUILD_DATE }} # Single tag for all targets
+        body: |
+          Build: ${{ env.FOX_BRANCH }}
+          Build Date: ${{ env.BUILD_DATE }}
+          Devices: dm1q, dm2q, dm3q
+
+          **Device Trees**
+          * dm1q: [Link](https://github.com/cola2261/android_device_samsung_dm1q-recovery/tree/fox_12.1)
+          * dm2q: [Link](https://github.com/cola2261/android_device_samsung_dm2q-recovery/tree/fox_12.1)
+          * dm3q: [Link](https://github.com/cola2261/android_device_samsung_dm3q-recovery/tree/fox_12.1)
+          * Common Tree: [sm8550-common](https://github.com/cola2261/android_device_samsung_sm8550-common-recovery/tree/fox_12.1)
