@@ -1,4 +1,4 @@
-name: Build and release OrangeFox
+name: Build / Release OrangeFox
 
 on:
   workflow_dispatch:
@@ -38,9 +38,10 @@ jobs:
       with:
         swap-size-gb: 24
 
-    - name: Set OrangeFox branch
+    - name: Set build variables
       run: |
         echo "FOX_BRANCH=12.1" >> $GITHUB_ENV
+        echo "IMG_TYPE=recoveryimage" >> $GITHUB_ENV
 
     - name: Setup Manifest
       run: |
@@ -84,7 +85,7 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         set -e
-        lunch twrp_${{ matrix.target }}-eng && make -j"$(nproc)" "recoveryimage"
+        lunch twrp_${{ matrix.target }}-eng && make -j"$(nproc)" "${{ env.IMG_TYPE }}"
 
     - name: Check if Recovery Exist and Set Path
       id: check
@@ -107,28 +108,17 @@ jobs:
         IMG_NAME=$(basename ${FILE_PATH}/OrangeFox*.img)
         echo "IMAGE_NAME=${{ matrix.target }}-${IMG_NAME}" >> $GITHUB_ENV
 
-    - name: Upload Artifact (Required for Release Job)
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.target }}-recovery-files
         path: |
-          ${{ env.File_Path }}/OrangeFox*.img
-          ${{ env.File_Path }}/OrangeFox*.img.tar
+          ${{ env.File_Path }}/ramdisk-recovery.*
+          ${{ env.File_Path }}/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.*
           ${{ env.File_Path }}/OrangeFox*.zip
         retention-days: 1 # Delete artifacts after 1 day to save storage
 
-  release:
-    needs: build # Wait for the 'build' job to complete successfully
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts # Downloads all matrix artifacts into this folder
-
+    
     - name: Set Release Values
       run: |
         echo "BUILD_DATE=$(date +%Y.%m.%d)" >> $GITHUB_ENV
@@ -138,11 +128,13 @@ jobs:
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
       with:
-        # Use the collected paths of all files in the artifacts directory
-        files: ${{ env.FILE_ASSETS }}
-        name: Unofficial OrangeFox ${{ env.BUILD_DATE }}
-        tag_name: ${{ github.run_id }}-${{ env.BUILD_DATE }} # Single tag for all targets
+        files: |
+          ${{ env.File_Path }}/OrangeFox*.zip
+          ${{ env.File_Path }}/OrangeFox*.tar
+        name: ${{ env.BUILD_DATE }} Unofficial OrangeFox
+        tag_name: ${{ github.run_id }}
         body: |
+          ## Unofficial OrangeFox Recovery
           Build: ${{ env.FOX_BRANCH }}
           Build Date: ${{ env.BUILD_DATE }}
           Devices: dm1q, dm2q, dm3q
@@ -152,3 +144,4 @@ jobs:
           * dm2q: [Link](https://github.com/cola2261/android_device_samsung_dm2q-recovery/tree/fox_12.1)
           * dm3q: [Link](https://github.com/cola2261/android_device_samsung_dm3q-recovery/tree/fox_12.1)
           * Common Tree: [sm8550-common](https://github.com/cola2261/android_device_samsung_sm8550-common-recovery/tree/fox_12.1)
+
