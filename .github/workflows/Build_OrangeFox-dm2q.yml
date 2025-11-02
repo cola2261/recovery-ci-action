@@ -44,7 +44,7 @@ jobs:
     - name: Clone Device Tree
       run: |
         cd ${GITHUB_WORKSPACE}/OrangeFox/fox_12.1
-        git clone https://github.com/cola2261/android_device_samsung_dm2q-recovery -b fox_12.1 ./device/samsung/dm2q
+        git clone https://github.com/cola2261/android_device_samsung_dm2q-recovery -b fox_12.1-beta ./device/samsung/dm2q
         cd device/samsung/dm2q
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
